@@ -36,7 +36,7 @@ export function PasteForm({
         onChange={(event) => setText(event.target.value)}
         spellCheck={false}
         placeholder={
-          'INTRODUCTION TO COMPUTING\n\nQUESTION: What year was your first computer?\nDEADLINE: Friday, Sept 11\nSUBMISSION: Check GClass for instructions.'
+        'Example\nTitle:INTRODUCTION TO COMPUTING\nQUESTION/TITLE:Activity 1\nDEADLINE: Friday, Sept 11\nSUBMISSION: Check GClass for instructions.'
         }
         rows={12}
         className="w-full resize-y rounded-lg border border-line bg-surface p-4 font-mono text-[13px] leading-relaxed text-ink placeholder:text-muted/60 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"

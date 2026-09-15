@@ -1,11 +1,24 @@
+
 import type { Task } from '../types/task'
 import { parseDeadline } from './deadlines'
 import { normalizeText, stripDecoration } from './normalizeText'
 
-type FieldKey = 'deadline' | 'submission' | 'note' | 'title'
+type FieldKey =
+  | 'subject'
+  | 'deadline'
+  | 'submission'
+  | 'note'
+  | 'title'
 
 const KEY_PATTERNS: { key: FieldKey; re: RegExp }[] = [
-  { key: 'deadline', re: /^(deadline|due date|due|dueon|pasahan|deadlines)$/ },
+  {
+    key: 'subject',
+    re: /^(subject|subject name|subject title)$/,
+  },
+  {
+    key: 'deadline',
+    re: /^(deadline|due date|due|dueon|pasahan|deadlines)$/,
+  },
   {
     key: 'submission',
     re: /^(submission|submit|submit to|where|where to submit|platform|format)$/,
@@ -16,7 +29,7 @@ const KEY_PATTERNS: { key: FieldKey; re: RegExp }[] = [
   },
   {
     key: 'title',
-    re: /^(question|task|takda|activity|assignment|project|topic|gawain|requirement|output|quiz|exam|homework)\s*\d*$/,
+    re: /^(title|question|task|takda|activity|assignment|project|topic|gawain|requirement|output|quiz|exam|homework)\s*\d*$/,
   },
 ]
 
@@ -27,18 +40,23 @@ interface KeyLine {
 }
 
 function matchKeyLine(line: string): KeyLine | null {
-  const match = line.match(/^([^:\u2013\u2014]{1,32})[:\u2013\u2014]\s*(.*)$/)
+  const match = line.match(
+    /^([^:\u2013\u2014]{1,64})[:\u2013\u2014]\s*(.*)$/,
+  )
 
   if (!match) return null
 
   const label = match[1].trim()
+
   const compact = label
     .toLowerCase()
     .replace(/[.*_]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
 
-  const found = KEY_PATTERNS.find((pattern) => pattern.re.test(compact))
+  const found = KEY_PATTERNS.find((pattern) =>
+    pattern.re.test(compact),
+  )
 
   if (!found) return null
 
@@ -49,6 +67,22 @@ function matchKeyLine(line: string): KeyLine | null {
   }
 }
 
+/*
+ * This is kept for backward compatibility.
+ *
+ * It can still recognize an old-style subject such as:
+ *
+ * PATHFIT
+ * MATHEMATICS
+ * COMPUTER PROGRAMMING
+ *
+ * However, the preferred format is:
+ *
+ * Subject: PATHFIT
+ *
+ * This also avoids depending on ASCII uppercase for
+ * Unicode subjects such as 𝐏𝐀𝐓𝐇𝐅𝐈𝐓.
+ */
 function isSubjectHeading(line: string): boolean {
   const letters = line.replace(/[^A-Za-z]/g, '')
 
@@ -67,7 +101,9 @@ function titleCase(value: string): string {
     .toLowerCase()
     .split(' ')
     .map((word) =>
-      word.length > 2 ? word[0].toUpperCase() + word.slice(1) : word,
+      word.length > 2
+        ? word[0].toUpperCase() + word.slice(1)
+        : word,
     )
     .join(' ')
 }
@@ -98,7 +134,9 @@ export function parseTasks(
   const flush = () => {
     if (
       current &&
-      (current.title || current.deadlineRaw || current.submission)
+      (current.title ||
+        current.deadlineRaw ||
+        current.submission)
     ) {
       drafts.push(current)
     }
@@ -106,17 +144,58 @@ export function parseTasks(
     current = null
   }
 
-  const start = (): Draft => ({ subject })
+  const start = (): Draft => ({
+    subject,
+  })
 
   for (const clean of lines) {
-    if (isSubjectHeading(clean)) {
+    const keyLine = matchKeyLine(clean)
+
+    /*
+     * NEW TEMPLATE:
+     *
+     * Subject: 𝐏𝐀𝐓𝐇𝐅𝐈𝐓
+     *
+     * The value after "Subject:" is accepted exactly
+     * as written, including Unicode/fancy characters.
+     */
+    if (keyLine?.key === 'subject') {
       flush()
-      subject = titleCase(clean)
+
+      subject = keyLine.value.trim()
+
       continue
     }
 
-    const keyLine = matchKeyLine(clean)
+    /*
+     * OLD SUBJECT FORMAT:
+     *
+     * PATHFIT
+     * MATHEMATICS
+     *
+     * This is still supported.
+     */
+    if (isSubjectHeading(clean)) {
+      flush()
 
+      subject = titleCase(clean)
+
+      continue
+    }
+
+    /*
+     * Ignore unstructured text before a valid subject.
+     *
+     * This prevents random announcement text from being
+     * automatically treated as a subject.
+     */
+    if (!keyLine && subject === 'General' && !current) {
+      continue
+    }
+
+    /*
+     * Normal non-key line.
+     */
     if (!keyLine) {
       if (!current || current.title) {
         flush()
@@ -124,24 +203,59 @@ export function parseTasks(
       }
 
       current.title = clean
+
       continue
     }
 
+    /*
+     * TITLE
+     *
+     * Title: Activity 1
+     * Question: What is...
+     * Task: Create a program
+     */
     if (keyLine.key === 'title') {
       if (!current || current.title) {
         flush()
         current = start()
       }
 
-      current.kind = titleCase(keyLine.label)
-      current.title = keyLine.value || titleCase(keyLine.label)
+      current.kind =
+        keyLine.label.toLowerCase() === 'title'
+          ? undefined
+          : titleCase(keyLine.label)
+
+      current.title =
+        keyLine.value || titleCase(keyLine.label)
+
       continue
     }
 
+    /*
+     * Create a task if the announcement starts with
+     * Submission or Deadline.
+     */
     if (!current) {
       current = start()
     }
 
+    /*
+     * SUBMISSION
+     */
+    if (keyLine.key === 'submission') {
+      if (current.submission) {
+        current.submission =
+          `${current.submission} · ${keyLine.value}`
+      } else {
+        current.submission = keyLine.value
+      }
+
+      continue
+    }
+
+    /*
+     * DEADLINE
+     */
     if (keyLine.key === 'deadline') {
       if (current.deadlineRaw) {
         flush()
@@ -149,13 +263,14 @@ export function parseTasks(
       }
 
       current.deadlineRaw = keyLine.value
-    } else if (keyLine.key === 'submission') {
-      if (current.submission) {
-        current.submission = `${current.submission} · ${keyLine.value}`
-      } else {
-        current.submission = keyLine.value
-      }
-    } else {
+
+      continue
+    }
+
+    /*
+     * NOTE
+     */
+    if (keyLine.key === 'note') {
       current.note = current.note
         ? `${current.note} ${keyLine.value}`
         : keyLine.value
@@ -177,15 +292,25 @@ export function parseTasks(
     }
 
     tasks.push({
-      id: `task-${index}-${draft.subject
+      id: `task-${Date.now()}-${index}-${draft.subject
         .toLowerCase()
-        .replace(/\s+/g, '-')}-${deadline.getTime()}`,
+        .replace(/\s+/g, '-')}`,
+
       subject: draft.subject,
+
       kind: draft.kind,
-      title: draft.title || draft.kind || 'Requirement',
+
+      title:
+        draft.title ||
+        draft.kind ||
+        'Requirement',
+
       submission: draft.submission,
+
       note: draft.note,
+
       deadlineRaw: draft.deadlineRaw,
+
       deadline,
     })
   })
